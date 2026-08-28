@@ -1,4 +1,6 @@
 build/
 push.bat
+test.cpp
+trash.txt
 result.txt
 CompilerExample/

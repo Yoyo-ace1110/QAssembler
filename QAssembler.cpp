@@ -174,15 +174,16 @@ public:
         // replace all spaces to " "
         this->replace_all("\t", " ");
     }
-    inline constexpr void erase_comments() noexcept {
-        // ... \n
+    inline void erase_comments() {
+        // this won't change the line number
+        size_t comment_pos, end_of_line;
         while (true) {
-            // this won't change the line number
-            size_t comment_pos = this->find("//");
-            size_t end_of_line = this->find("\n", comment_pos);
+            comment_pos = this->find("//", comment_pos);
+            end_of_line = this->find("\n", comment_pos);
             if (comment_pos == npos) break;
+            if (end_of_line == npos) text.erase(comment_pos);
             // erase the comment line without '\n'
-            this->erase(Range(comment_pos, (end_of_line == npos) ? 0 : end_of_line));
+            else this->erase(Range(comment_pos++, end_of_line));
         }
     }
 };
@@ -342,17 +343,19 @@ private:
         if (index < text.size()) return;
         throw std::out_of_range("Tokenizer[] index out of range");
     }
-    inline constexpr bool _has_close_quote(size_t index) const {
+    inline bool _has_close_quote(size_t index) const {
         size_t count = 0;
         this->_ensure_index(index);
+        if (index == 0) return false;
         if (text[index] != '"') return false;
+        --index;
         // count the "\" before quote
-        do {
+        while (true) {
+            if (text[index] != '\\') break;
+            ++count;
+            if (index == 0) break;
             --index;
-            if (text[index] == '\\') {
-                ++count;
-            } else break;
-        } while (index > 0);
+        }
         // (count % 2 == 0);
         return !(count & 1);
     }
