@@ -1,16 +1,22 @@
 // version: OPENQASM 2.0
 // Only U and CX are built-in gates
+// Third-party library: see NOTICE file
 
 #include<array>
 #include<deque>
 #include<string>
 #include<vector>
 #include<memory>
+#include<limits>
 #include<fstream>
 #include<cstdint>
 #include<iomanip>
+#include<utility>
+#include<charconv>
 #include<iostream>
+#include<optional>
 #include<stdexcept>
+#include<filesystem>
 #include<string_view>
 
 namespace {
@@ -38,6 +44,48 @@ namespace {
             std::cout << arr[i] << "\n";
         }
     }
+
+    inline std::filesystem::path get_current_dir() {
+        return std::filesystem::current_path();
+    }
+
+    #if defined(_WIN32)
+        #include <windows.h>
+    #elif defined(__linux__)
+        #include <unistd.h>
+        #include <limits.h>
+    #elif defined(__APPLE__)
+        #include <mach-o/dyld.h>
+    #endif
+    std::filesystem::path get_program_dir() {
+        #if defined(_WIN32)
+            wchar_t path[MAX_PATH] = {0};
+            GetModuleFileNameW(NULL, path, MAX_PATH);
+            return std::filesystem::path(path).parent_path();
+        #elif defined(__linux__)
+            char path[PATH_MAX] = {0};
+            ssize_t count = readlink("/proc/self/exe", path, PATH_MAX);
+            if (count != -1) return std::filesystem::path(std::string(path, count)).parent_path();
+        #elif defined(__APPLE__)
+            char path[PATH_MAX] = {0};
+            uint32_t size = sizeof(path);
+            if (_NSGetExecutablePath(path, &size) == 0) {
+                return std::filesystem::canonical(std::filesystem::path(path)).parent_path();
+            }
+        #else
+            return std::filesystem::current_path(); // Fallback
+        #endif
+    }
+
+    inline bool convert_sv_to_int64(std::string_view sv, std::int64_t& val) {
+        // return whether it was overflow
+        std::from_chars_result result = std::from_chars(sv.data(), sv.data() + sv.size(), val);
+        // convert successfully
+        if      (result.ec == std::errc{}) { return false; }
+        else if (result.ec == std::errc::result_out_of_range) { return true; }
+        // invalid std::string_view
+        else throw std::invalid_argument("invalid std::string_view to convert to std::int64_t");
+    }
 }
 
 class Range {
@@ -45,66 +93,224 @@ public:
     // [begin, end)
     size_t begin, end;
     // ----- constructor -----
-    inline constexpr Range(size_t begin_, size_t end_) noexcept : begin(begin_), end(end_) {}
-    inline constexpr Range(const std::string& string) noexcept : begin(0), end(string.length()) {}
-    inline constexpr Range(const Range& other) noexcept : begin(other.begin), end(other.end) {}
+    inline Range(size_t begin_, size_t end_) : begin(begin_), end(end_) {}
+    inline Range(const std::string& string) : begin(0), end(string.length()) {}
+    inline Range(const Range& other) : begin(other.begin), end(other.end) {}
     // ----- assignment operator -----
-    inline constexpr Range& operator = (const Range& other) noexcept {
+    inline Range& operator = (const Range& other) {
         begin = other.begin;
         end = other.end;
         return (*this);
     }
     // ----- comparison operator -----
-    friend inline constexpr bool operator == (const Range& a, const Range& b) noexcept {
+    friend inline bool operator == (const Range& a, const Range& b) {
         return (a.begin == b.begin && a.end == b.end);
     }
-    friend inline constexpr bool operator != (const Range& a, const Range& b) noexcept {
+    friend inline bool operator != (const Range& a, const Range& b) {
         return !(a == b);
     }
     // ----- function -----
-    inline constexpr size_t length() const noexcept {
+    inline size_t length() const {
         return (end > begin) ? (end - begin) : 0;
+    }
+};
+
+class Token {
+public:
+    enum class Kind : std::uint8_t {
+        Invalid,
+
+        // keywords
+        OpenQASM,
+        Include,
+        If,
+        QReg,
+        CReg,
+        Gate,
+        Reset,
+        Opaque,
+        Measure,
+        Barrier,
+
+        // built-in
+        Const_pi,   // pi
+        Func_ln,    // ln
+        Func_sin,   // sin
+        Func_cos,   // cos
+        Func_tan,   // tan
+        Func_exp,   // exp
+        Func_sqrt,  // sqrt
+
+        // operators
+        Plus,        // +
+        Minus,       // -
+        Times,       // *
+        Devide,      // /
+        Power,       // ^
+
+        // symbols
+        Arrow,          // ->
+        Equal,          // ==
+        Comma,          // ,
+        Semicolon,      // ;
+        LeftBracket,    // [
+        RightBracket,   // ]
+        LeftBrace,      // {
+        RightBrace,     // }
+        LeftParen,      // (
+        RightParen,     // )
+
+        // dynamic
+        nnInteger,
+        Identifier,
+        RealNumber,
+        StringLiteral,
+    };
+    // member
+    size_t line = npos;
+    std::string_view text;
+    Kind kind = Kind::Invalid;
+    // constructor
+    inline Token() {}
+    inline Token(size_t line_, std::string_view text_, Kind kind_) noexcept
+        : line(line_), text(text_), kind(kind_) {}
+    inline Token(const Token& other) : line(other.line), text(other.text), kind(other.kind) {}
+    // function
+    inline bool is_valid() const {
+        return (kind != Kind::Invalid);
+    } 
+    inline size_t length() const {
+        return text.size();
+    }
+    inline bool sep_by_space() const {
+        return (
+            kind == Kind::OpenQASM      || 
+            kind == Kind::Include       || 
+            kind == Kind::If            || 
+            kind == Kind::QReg          || 
+            kind == Kind::CReg          || 
+            kind == Kind::Reset         || 
+            kind == Kind::Opaque        || 
+            kind == Kind::Measure       || 
+            kind == Kind::Barrier       || 
+            kind == Kind::Arrow         || 
+            kind == Kind::Identifier    || 
+            kind == Kind::StringLiteral
+        );
+    }
+    // assignment operator
+    inline Token& operator = (const Token& other) {
+        line = other.line;
+        text = other.text;
+        kind = other.kind;
+        return (*this);
+    }
+    // ostream operator
+    friend std::ostream& operator<< (std::ostream& os, const Token& token) {
+        return (os << "In line " << token.line << ": \"" << token.text << '"');
+    }
+};
+
+class Error {
+public:
+    // member
+    Range lines{0, 1}; // lines here starts with 1
+    std::string message;
+    std::string_view text;
+    using pointer_type = std::shared_ptr<context_type>;
+    inline static pointer_type context_ptr = nullptr;
+    // constructor
+    inline Error(Range lines_, const std::string& msg, std::string_view text_) 
+        : lines(lines_), message(msg), text(text_) {}
+    inline Error(const Token& token, const std::string& msg) : message(msg), text(token.text) {
+        // single line token
+        if (token.kind != Token::Kind::StringLiteral) {
+            lines.begin = token.line;
+            lines.end   = token.line + 1;
+            return;
+        }
+        // multiple lines (string literal only)
+        size_t index = 0;
+        size_t lines_count = 1;
+        // find until nothing
+        while (true) {
+            index = token.text.find('\n', index);
+            // \n not found
+            if (index == npos) break;
+            ++lines_count;
+            ++index;
+            // reach the end of text
+            if (index == token.text.size()) break;
+        }
+        lines.begin = token.line;
+        lines.end   = token.line + lines_count;
+    }
+    // ostream support
+    inline void print() const { std::cout << (*this) << '\n'; }
+    friend inline std::ostream& operator<< (std::ostream& os, const Error& error) {
+        if (!context_ptr) throw std::invalid_argument("invalid context");
+        std::ios_base::fmtflags f(os.flags());
+        // single line
+        if (error.lines.length() == 1) [[likely]] {
+            os << "In line " << error.lines.begin << ": \n";
+            os << '\t' << std::setw(4) << error.lines.begin << " | " << (*error.context_ptr)[error.lines.end-1] << '\n';
+        } 
+        // multiple lines
+        else {
+            size_t index = error.lines.begin;
+            size_t max_line = error.lines.end - 1;
+            int width = (max_line > 9999) ? 6 : 4;
+            os << "In lines " << error.lines.begin << '-' << max_line << ": \n";
+            while (index < error.lines.end) {
+                os << "\t" << std::setw(width) << index << " | " << (*error.context_ptr)[index] << '\n';
+                ++index;
+            }
+        }
+        os << "Error: " << error.message << "\n" << error.text << '\n';
+        os.flags(f);
+        return os;
     }
 };
 
 class TextProcessor {
 protected:
-    inline constexpr Range _default_range() const noexcept {
+    inline Range _default_range() const {
         return Range(0, text.size());
     }
 public:
-    std::string text = "";
+    std::string text;
     // ----- constructor -----
-    inline constexpr TextProcessor(std::string text_ = "") noexcept : text(text_) {}
-    inline constexpr TextProcessor(const TextProcessor& other) noexcept : text(other.text) {}
+    inline TextProcessor(std::string text_) : text(text_) {}
+    inline TextProcessor(const TextProcessor& other) : text(other.text) {}
     // ----- assignment operator -----
-    inline constexpr TextProcessor& operator = (const TextProcessor& other) noexcept {
+    inline TextProcessor& operator = (const TextProcessor& other) {
         text = other.text;
         return (*this);
     }
     // ----- function -----
-    inline constexpr void clear() noexcept {text.clear();}
-    inline constexpr bool empty() const noexcept {return text.empty();}
-    inline constexpr void ensure(const Range& range) const {
+    inline void clear() {text.clear();}
+    inline bool empty() const {return text.empty();}
+    inline void ensure(const Range& range) const {
         if ((range.begin > range.end) || (range.end > text.length())) {
             throw std::invalid_argument("Invalid range object received!");
         }
     }
-    inline constexpr void erase(const Range& range) noexcept {
+    inline void erase(const Range& range) {
         this->ensure(range);
         text.erase(range.begin, range.length());
     }
-    inline constexpr void insert(size_t pos, const std::string& str) noexcept {
+    inline void insert(size_t pos, const std::string& str) {
         text.insert(pos, str);
     }
-    inline constexpr void replace(const Range& range, const std::string& str) noexcept {
+    
+    inline void replace(const Range& range, const std::string& str) {
         this->ensure(range);
         text.replace(range.begin, range.length(), str);
     }
-    inline constexpr void replace_all(const std::string& from, const std::string& to) noexcept {
+    inline void replace_all(const std::string& from, const std::string& to) {
         this->replace_all(from, to, this->_default_range());
     }
-    inline constexpr void replace_all(const std::string& from, const std::string& to, Range range) noexcept {
+    inline void replace_all(const std::string& from, const std::string& to, Range range) {
         this->ensure(range);
         if (from.empty()) return;
         while (range.begin < range.end) {
@@ -116,14 +322,15 @@ public:
             range.begin = pos + to.length();
         }
     }
-    inline constexpr size_t find(const std::string& str) const noexcept {
+    
+    inline size_t find(const std::string& str) const {
         return this->find(str, this->_default_range());
     }
-    inline constexpr size_t find(const std::string str, size_t pos) const noexcept {
+    inline size_t find(const std::string str, size_t pos) const {
         if (str.empty() || pos >= text.size()) return npos;
         return text.find(str, pos);
     }
-    inline constexpr size_t find(const std::string& str, const Range& range) const noexcept {
+    inline size_t find(const std::string& str, const Range& range) const {
         if (str.empty()) return npos;
         size_t pos = text.find(str, range.begin);
         if (pos != npos && pos+str.length() <= range.end) {
@@ -131,10 +338,11 @@ public:
         }
         return npos;
     }
-    inline constexpr std::vector<std::string> split_by(const std::string& sep) const noexcept {
+    
+    inline std::vector<std::string> split_by(const std::string& sep) const {
         return this->split_by(sep, _default_range());
     }
-    inline constexpr std::vector<std::string> split_by(const std::string& sep, const Range& range) const noexcept {
+    inline std::vector<std::string> split_by(const std::string& sep, const Range& range) const {
         this->ensure(range);
         std::vector<std::string> result;
         if (this->empty() || range.length() == 0) return result;
@@ -165,15 +373,6 @@ public:
 class Preprocessor : public TextProcessor {
 public:
     // ----- function -----
-    inline constexpr void standardize_EOL() noexcept {
-        // replace all EOL to "\n"
-        this->replace_all("\r\n", "\n");
-        this->replace_all("\r"  , "\n");
-    }
-    inline constexpr void standardize_space() noexcept {
-        // replace all spaces to " "
-        this->replace_all("\t", " ");
-    }
     inline void erase_comments() {
         // this won't change the line number
         size_t comment_pos, end_of_line;
@@ -186,160 +385,33 @@ public:
             else this->erase(Range(comment_pos++, end_of_line));
         }
     }
-};
-
-enum class TokenType : std::uint8_t {
-    invalid,
-    // keywords
-    openqasm,
-    include,
-    if_,
-    qreg,
-    creg,
-    gate,
-    reset,
-    opaque,
-    measure,
-    barrier,
-    // built-in constant
-    const_pi,
-    // built-in functions
-    func_ln,     // ln
-    func_sin,    // sin
-    func_cos,    // cos
-    func_tan,    // tan
-    func_exp,    // exp
-    func_sqrt,   // sqrt
-    // operators
-    plus,        // +
-    minus,       // -
-    times,    // *
-    devide,      // /
-    power,       // ^
-    // symbols
-    comma,       // ,
-    semicolon,   // ;
-    l_bracket,   // [
-    r_bracket,   // ]
-    l_brace,     // {
-    r_brace,     // }
-    l_paren,     // (
-    r_paren,     // )
-    arrow,       // ->
-    equal,       // ==
-    // dynamic
-    nninteger,
-    identifier,
-    real_number,
-    string_literal,
-};
-
-class Token {
-public:
-    // member
-    size_t line = npos;
-    std::string_view text = "";
-    TokenType type = TokenType::invalid;
-    // constructor
-    inline constexpr Token() noexcept {}
-    inline constexpr Token(const Token& other) noexcept : line(other.line), text(other.text), type(other.type) {}
-    inline constexpr Token(size_t line_, std::string_view token_str, TokenType token_type) noexcept
-        : line(line_), text(token_str), type(token_type) {}
-    // function
-    inline constexpr bool is_valid() const noexcept {
-        return (type != TokenType::invalid);
-    } 
-    inline constexpr size_t length() const noexcept {
-        return text.size();
+    inline void standardize_EOL() {
+        // replace all EOL to "\n"
+        this->replace_all("\r\n", "\n");
+        this->replace_all("\r"  , "\n");
     }
-    // assignment operator
-    inline constexpr Token& operator = (const Token& other) noexcept {
-        line = other.line;
-        text = other.text;
-        type = other.type;
-        return (*this);
-    }
-    // ostream operator
-    friend std::ostream& operator<< (std::ostream& os, const Token& token) {
-        return (os << "In line " << token.line << ": \"" << token.text << '"');
-    }
-};
-
-class Error {
-public:
-    // member
-    Range lines{0, 1};          // lines here is from human's point of view
-    std::string message = "";
-    std::string_view text = "";
-    using pointer_type = std::shared_ptr<context_type>;
-    inline static pointer_type context_ptr = nullptr;
-    // constructor
-    inline constexpr Error(Range lines_, const std::string& msg, std::string_view text_) noexcept 
-        : lines(lines_), message(msg), text(text_) {}
-    inline constexpr Error(const Token& token, const std::string& msg) noexcept 
-        : message(msg), text(token.text) {
-        // single line token
-        if (token.type != TokenType::string_literal) {
-            lines.begin = token.line;
-            lines.end   = token.line + 1;
-            return;
-        }
-        // multiple lines (string literal only)
-        size_t index = 0;
-        size_t lines_count = 1;
-        // find until nothing
-        while (true) {
-            index = token.text.find('\n', index);
-            // \n not found
-            if (index == npos) break;
-            ++lines_count;
-            ++index;
-            // reach the end of text
-            if (index == token.text.size()) break;
-        }
-        lines.begin = token.line;
-        lines.end   = token.line + lines_count;
-    }
-    // ostream support
-    inline void print() const { std::cout << (*this) << '\n'; }
-    friend std::ostream& operator<< (std::ostream& os, const Error& error) {
-        if (!context_ptr) throw std::invalid_argument("invalid context");
-        std::ios_base::fmtflags f(os.flags());
-        // single line
-        if (error.lines.length() == 1) [[likely]] {
-            os << "In single line " << error.lines.begin << ": \n";
-            os << '\t' << std::setw(4) << error.lines.begin << " | " << (*error.context_ptr)[error.lines.begin-1] << '\n';
-        } 
-        // multiple lines
-        else {
-            size_t index = error.lines.begin;
-            size_t max_line = error.lines.end - 1;
-            int width = (max_line > 9999) ? 6 : 4;
-            os << "In lines " << error.lines.begin << '-' << max_line << ": \n";
-            while (index < error.lines.end) {
-                os << "\t" << std::setw(width) << index << " | " << (*error.context_ptr)[index] << '\n';
-                ++index;
-            }
-        }
-        os << "Error: " << error.message << "\n" << error.text << '\n';
-        os.flags(f);
-        return os;
+    inline void standardize_space() {
+        // replace all spaces to " "
+        this->replace_all("\t", " ");
     }
 };
 
 class Tokenizer {
 public:
     // ----- member -----
-    std::string_view text = "";
-    std::vector<Token> tokens{};
-    std::vector<Error> errors{};
+    std::string_view text;
+    std::vector<Token> tokens;
+    std::vector<Error> errors;
     // this container will not reallocate when you call push_back()
     // it will allocate a new chuck and append the element in
-    // it store the pointer of every chuck instead of element  
-    std::deque<std::string> fixed_str = {};
+    // it store the pointer of every chuck instead of element
+    std::deque<std::string> fixed_str;
 private:
     // ----- function -----
-    inline constexpr void _ensure_index(size_t index) const {
+    inline bool _is_number(char c) const {
+        return (c >= '0' && c <= '9');
+    }
+    inline void _ensure_index(size_t index) const {
         if (index < text.size()) return;
         throw std::out_of_range("Tokenizer[] index out of range");
     }
@@ -359,106 +431,105 @@ private:
         // (count % 2 == 0);
         return !(count & 1);
     }
-    inline constexpr bool _is_number(char c) const noexcept {
-        return (c >= '0' && c <= '9');
-    }
-    inline constexpr void _add_error(const Token& token, const std::string& str) {
+    inline void _add_error(const Token& token, const std::string& str) {
         errors.push_back(Error(token, str));
     }
-    inline constexpr bool _can_be_identifier(char c) const noexcept {
+    
+    inline bool _can_be_identifier(char c) const {
         bool is_uppercase = (c >= 'A' && c <= 'Z');
         bool is_lowercase = (c >= 'a' && c <= 'z');
         return (is_uppercase || is_lowercase || this->_is_number(c) || c == '_');
     }
-    inline constexpr bool _is_end_of_keyword(size_t next_index) const noexcept {
+    inline bool _is_end_of_keyword(size_t next_index) const {
         if (next_index >= text.size()) return true;
         return !this->_can_be_identifier(text[next_index]);
     }
-    inline constexpr std::string _get_substr(size_t index, size_t length) const {
+    inline std::string _get_substr(size_t index, size_t length) const {
         this->_ensure_index(index);
         return std::string(this->_get_subview(index, length));
     }
-    inline constexpr std::string_view _get_subview(size_t index, size_t length) const {
+    inline std::string_view _get_subview(size_t index, size_t length) const {
         this->_ensure_index(index);
         return text.substr(index, length);
     }
-    inline constexpr Token _match_symbol(size_t line, size_t index) const {
+    
+    inline Token _match_symbol(size_t line, size_t index) const {
         this->_ensure_index(index);
-        std::string_view subview = "";
+        std::string_view subview;
         // 2-char symbols
         if (index+1 < text.size()) {
             subview = this->_get_subview(index, 2);
-            if (subview == "->") {return Token(line, subview, TokenType::arrow);}
-            if (subview == "==") {return Token(line, subview, TokenType::equal);}
+            if (subview == "->") {return Token(line, subview, Token::Kind::Arrow);}
+            if (subview == "==") {return Token(line, subview, Token::Kind::Equal);}
         }
         // 1-char symbols
         switch (text[index]) {
-            case ',': {return Token(line, this->_get_subview(index, 1), TokenType::comma);}
-            case ';': {return Token(line, this->_get_subview(index, 1), TokenType::semicolon);}
-            case '[': {return Token(line, this->_get_subview(index, 1), TokenType::l_bracket);}
-            case ']': {return Token(line, this->_get_subview(index, 1), TokenType::r_bracket);}
-            case '{': {return Token(line, this->_get_subview(index, 1), TokenType::l_brace);}
-            case '}': {return Token(line, this->_get_subview(index, 1), TokenType::r_brace);}
-            case '(': {return Token(line, this->_get_subview(index, 1), TokenType::l_paren);}
-            case ')': {return Token(line, this->_get_subview(index, 1), TokenType::r_paren);}
-            case '+': {return Token(line, this->_get_subview(index, 1), TokenType::plus);}
-            case '-': {return Token(line, this->_get_subview(index, 1), TokenType::minus);}
-            case '*': {return Token(line, this->_get_subview(index, 1), TokenType::times);}
-            case '/': {return Token(line, this->_get_subview(index, 1), TokenType::devide);}
-            case '^': {return Token(line, this->_get_subview(index, 1), TokenType::power);}
+            case ',': {return Token(line, this->_get_subview(index, 1), Token::Kind::Comma);}
+            case ';': {return Token(line, this->_get_subview(index, 1), Token::Kind::Semicolon);}
+            case '[': {return Token(line, this->_get_subview(index, 1), Token::Kind::LeftBracket);}
+            case ']': {return Token(line, this->_get_subview(index, 1), Token::Kind::RightBracket);}
+            case '{': {return Token(line, this->_get_subview(index, 1), Token::Kind::LeftBrace);}
+            case '}': {return Token(line, this->_get_subview(index, 1), Token::Kind::RightBrace);}
+            case '(': {return Token(line, this->_get_subview(index, 1), Token::Kind::LeftParen);}
+            case ')': {return Token(line, this->_get_subview(index, 1), Token::Kind::RightParen);}
+            case '+': {return Token(line, this->_get_subview(index, 1), Token::Kind::Plus);}
+            case '-': {return Token(line, this->_get_subview(index, 1), Token::Kind::Minus);}
+            case '*': {return Token(line, this->_get_subview(index, 1), Token::Kind::Times);}
+            case '/': {return Token(line, this->_get_subview(index, 1), Token::Kind::Devide);}
+            case '^': {return Token(line, this->_get_subview(index, 1), Token::Kind::Power);}
             default : break;
         }
         // default
-        return Token(line, subview, TokenType::invalid);
+        return Token(line, subview, Token::Kind::Invalid);
     }
-    inline constexpr Token _match_keyword(size_t line, size_t index) const {
+    inline Token _match_keyword(size_t line, size_t index) const {
         this->_ensure_index(index);
-        std::string_view subview = "";
-        Token token(line, subview, TokenType::invalid);
+        std::string_view subview;
+        Token token(line, subview, Token::Kind::Invalid);
         const size_t remaining_length = text.size()-index;
         // lambda
-        auto match = [&] (std::string_view keyword, TokenType type) -> bool {
+        auto match = [&] (std::string_view keyword, Token::Kind kind) -> bool {
             size_t length = keyword.size();
             subview = this->_get_subview(index, length);
             if (subview == keyword && this->_is_end_of_keyword(index+length)) {
-                token = Token(line, subview, type);
+                token = Token(line, subview, kind);
                 return true;
             }
             return false;
         };
         // keywords, must be ordered by length
         if (remaining_length < 2) return token;
-        if (match("if", TokenType::if_))            return token;
-        if (match("ln", TokenType::func_ln))        return token;
-        if (match("pi", TokenType::const_pi))       return token;
+        if (match("if", Token::Kind::If))            return token;
+        if (match("ln", Token::Kind::Func_ln))        return token;
+        if (match("pi", Token::Kind::Const_pi))       return token;
         if (remaining_length < 3) return token;
-        if (match("sin", TokenType::func_sin))      return token;
-        if (match("cos", TokenType::func_cos))      return token;
-        if (match("tan", TokenType::func_tan))      return token;
-        if (match("exp", TokenType::func_exp))      return token;
+        if (match("sin", Token::Kind::Func_sin))      return token;
+        if (match("cos", Token::Kind::Func_cos))      return token;
+        if (match("tan", Token::Kind::Func_tan))      return token;
+        if (match("exp", Token::Kind::Func_exp))      return token;
         if (remaining_length < 4) return token;
-        if (match("qreg", TokenType::qreg))         return token;
-        if (match("creg", TokenType::creg))         return token;
-        if (match("gate", TokenType::gate))         return token;
-        if (match("sqrt", TokenType::func_sqrt))    return token;
+        if (match("qreg", Token::Kind::QReg))         return token;
+        if (match("creg", Token::Kind::CReg))         return token;
+        if (match("gate", Token::Kind::Gate))         return token;
+        if (match("sqrt", Token::Kind::Func_sqrt))    return token;
         if (remaining_length < 5) return token;
-        if (match("reset", TokenType::reset))       return token;
+        if (match("reset", Token::Kind::Reset))       return token;
         if (remaining_length < 6) return token;
-        if (match("opaque", TokenType::opaque))     return token;
+        if (match("opaque", Token::Kind::Opaque))     return token;
         if (remaining_length < 7) return token;
-        if (match("include", TokenType::include))   return token;
-        if (match("measure", TokenType::measure))   return token;
-        if (match("barrier", TokenType::barrier))   return token;
+        if (match("include", Token::Kind::Include))   return token;
+        if (match("measure", Token::Kind::Measure))   return token;
+        if (match("barrier", Token::Kind::Barrier))   return token;
         if (remaining_length < 8) return token;
-        if (match("OPENQASM", TokenType::openqasm)) return token;
+        if (match("OPENQASM", Token::Kind::OpenQASM)) return token;
         return token;
     }
-    inline constexpr void _add_dynamic_token_or_fix_error(size_t line, size_t index, size_t length) noexcept {
+    inline void _add_dynamic_token_or_fix_error(size_t line, size_t index, size_t length) {
         const size_t end = index+length-1;
         this->_ensure_index(end);
-        std::string string_buffer = "";
+        std::string string_buffer;
         std::string_view subview = this->_get_subview(index, length);
-        Token token(line, subview, TokenType::invalid);
+        Token token(line, subview, Token::Kind::Invalid);
         // string literal
         if (text[index] == '"') {
             if (length < 2 || !this->_has_close_quote(end)) {
@@ -472,7 +543,7 @@ private:
                 token.text.remove_suffix(1);
             }
             // string literal
-            token.type = TokenType::string_literal;
+            token.kind = Token::Kind::StringLiteral;
             // strip the quotes
             token.text.remove_prefix(1);
             token.text.remove_suffix(1);
@@ -545,11 +616,11 @@ private:
                 // Fix: delete this character
                 string_buffer.pop_back();
             }
-            // distinguish nninteger & real number
-            token.type = (
+            // distinguish nnInteger & real number
+            token.kind = (
                 (has_decimal_point || has_exponent) ? 
-                TokenType::real_number : 
-                TokenType::nninteger
+                Token::Kind::RealNumber : 
+                Token::Kind::nnInteger
             );
             if (string_buffer != subview) {
                 fixed_str.push_back(string_buffer);
@@ -571,12 +642,12 @@ private:
                 }
                 string_buffer += text[i];
             }
-            // identifier
+            // Identifier
             if (string_buffer != subview) {
                 fixed_str.push_back(string_buffer);
                 token.text = fixed_str.back();
             }
-            token.type = TokenType::identifier;
+            token.kind = Token::Kind::Identifier;
             tokens.push_back(token);
             return;
         }
@@ -585,16 +656,17 @@ private:
     }
 public:
     // ----- constructor -----
-    inline Tokenizer() noexcept = default;
-    inline Tokenizer(std::string_view str) noexcept : text(str) {}
-    inline Tokenizer(const Tokenizer& other) noexcept : text(other.text) {}
+    inline Tokenizer() = default;
+    inline Tokenizer(std::string_view sv) : text(sv) {}
+    inline Tokenizer(const Tokenizer& other) : text(other.text) {}
     // ----- function -----
-    inline constexpr void tokenize() noexcept {
+    inline void tokenize() {
         // initialize
         size_t length;
         size_t line = 1;
         size_t start = 0;
         size_t index = 0;
+        fixed_str.clear();
         Token token, dynamic;
         bool is_in_quote = false;
         // skip empty text
@@ -667,65 +739,651 @@ public:
         // the last token
         if (start != index) this->_add_dynamic_token_or_fix_error(line, start, length);
     }
-    // ----- operators -----
-    inline constexpr Token& operator[] (size_t index) {
-        if (index >= tokens.size()) throw std::out_of_range("Tokenizer[] index out of range");
-        return tokens[index];
+};
+
+struct Statement {
+private:
+    inline static constexpr std::array<std::string_view, 9> kind_map = {
+        "OPENQASM", 
+        "QRegDecl", 
+        "CRegDecl", 
+        "GateCall", 
+        "Include" , 
+        "Measure" ,
+        "Barrier" ,
+        "Opaque"  ,
+        "Reset"   ,
+    };
+public:
+    enum class Kind : std::uint8_t {
+        OpenQASM = 0,
+        QRegDecl = 1,
+        CRegDecl = 2,
+        GateCall = 3,
+        Include  = 4, 
+        Measure  = 5, 
+        Barrier  = 6, 
+        Opaque   = 7, 
+        Reset    = 8, 
+    };
+    // always endswith ';' => omit it
+    Kind kind;
+    std::vector<Token> leafs;
+    // function
+    inline void add_tokens(const std::vector<Token>& target, Range range) {
+        leafs.insert(leafs.end(), target.begin()+range.begin, target.begin()+range.end);
     }
-    inline constexpr const Token operator[] (size_t index) const {
-        if (index >= tokens.size()) throw std::out_of_range("Tokenizer[] index out of range");
-        return tokens[index];
+    // ostream support
+    friend inline std::ostream& operator<< (std::ostream& os, const Statement& statement) {
+        // Print the Type and the Kind
+        size_t kind_index = static_cast<size_t>(statement.kind);
+        std::string_view kind_sv = std::string_view("Unknown");
+        if (kind_index < Statement::kind_map.size()) {
+            kind_sv = Statement::kind_map[kind_index];
+        }
+        os << "\tStatement(Kind=" << kind_sv << ") { ";
+        bool is_first_token = true;
+        // Print the tokens
+        for (const Token& token : statement.leafs) {
+            if (is_first_token) {
+                is_first_token = false;
+            } else if (token.sep_by_space()) {
+                os << ' ';
+            }
+            os << token.text;
+        }
+        // Close the brace
+        return (os << " }");
     }
 };
 
-class ClassAST {
-    struct Expression {
-        
+struct Expression {
+private:
+    inline static constexpr std::array<std::string_view, 4> kind_map = {
+        "Variable", 
+        "BinaryOp", 
+        "UnaryOp" , 
+        "Literal" , 
     };
+public:
+    enum class Kind : std::uint8_t {
+        Variable,
+        BinaryOp,
+        UnaryOp, 
+        Literal
+    };
+    Kind kind;
+    std::vector<Token> leafs;
+    // ostream support
+    friend inline std::ostream& operator<< (std::ostream& os, const Expression& expression) {
+        // Print the Type and the Kind
+        size_t kind_index = static_cast<size_t>(expression.kind);
+        std::string_view kind_sv = std::string_view("Unknown");
+        if (kind_index < Expression::kind_map.size()) {
+            kind_sv = Expression::kind_map[kind_index];
+        }
+        os << "\tExpression(Kind=" << kind_sv << ") { ";
+        bool is_first_token = true;
+        // Print the tokens
+        for (const Token& token : expression.leafs) {
+            if (is_first_token) {
+                is_first_token = false;
+            } else if (token.sep_by_space()) {
+                os << ' ';
+            }
+        }
+        // Close the brace
+        return (os << " }");
+    }
+};
+
+struct IfCondition {
+    // if (creg==val) qop
+    size_t val;
+    Token creg;
+    Statement statemant;
+    // ostream support
+    friend inline std::ostream& operator<< (std::ostream& os, const IfCondition& if_cond) {
+        // Print the condition
+        os << "\tIfCondition { if (" << if_cond.creg.text << "==" << if_cond.val << ") ";
+        // Print the statement
+        return (os << if_cond.statemant << " }");
+    }
+};
+
+struct GateDeclaration {
+    // name (cparams) qparams
+    Token name;
+    std::vector<Token> cparams;
+    std::vector<Token> qparams;
+    std::vector<Statement> body;
+    // ostream support
+    friend inline std::ostream& operator<< (std::ostream& os, const GateDeclaration& gate_decl) {
+        bool is_first_token = true;
+        os << "\tGateDeclaration {\n\t\t";
+        // Print the name of gate and classical params
+        os << "gate " << gate_decl.name.text << '(';
+        for (const Token& token : gate_decl.cparams) {
+            if (!is_first_token) { (os << ", "); }
+            else { is_first_token = false; }
+            os << token.text;
+        }
+        os << ") {";
+        // Print the body inside
+        for (const Statement& statement : gate_decl.body) {
+            os << "\n\t\t\t" << statement;
+        }
+        os << "\n\t\t}" << "\n\t}";
+        return os;
+    }
+};
+
+class AST {
+public:
+    struct Node {
+        enum class Kind : std::uint8_t {
+            VecStatement, 
+            VecIfCondition, 
+            VecGateDeclaration, 
+        };
+        Kind kind;
+        size_t index;
+        inline Node() = default;
+        inline Node(Kind kind_, size_t index_) : kind(kind_), index(index_) {}
+    };
+    // ----- member -----
+    std::vector<Statement>          statements;
+    std::vector<IfCondition>        if_conditions;
+    std::vector<GateDeclaration>    gate_declarations;
+    std::vector<Node> node_handler; // handle level1 nodes
+    // ----- function -----
+    inline size_t size() const noexcept {
+        return node_handler.size();
+    } 
+    inline void push_back(const Statement& statement) {
+        Node node(Node::Kind::VecStatement, statements.size());
+        statements.push_back(statement);
+        node_handler.push_back(node);
+    }
+    inline void push_back(const IfCondition& if_condition) {
+        Node node(Node::Kind::VecIfCondition, if_conditions.size());
+        if_conditions.push_back(if_condition);
+        node_handler.push_back(node);
+    }
+    inline void push_back(const GateDeclaration& gate_declaration) {
+        Node node(Node::Kind::VecGateDeclaration, gate_declarations.size());
+        gate_declarations.push_back(gate_declaration);
+        node_handler.push_back(node);
+    }
+    // ------ operator -----
+    inline Node& operator[](size_t index) {
+        if (index >= node_handler.size()) {
+            std::string msg = "AST::operator[] index out of range: ";
+            throw std::out_of_range(to_str(msg, index));
+        }
+        return node_handler[index];
+    }
+    inline const Node& operator[](size_t index) const {
+        if (index >= node_handler.size()) {
+            std::string msg = "AST::operator[] index out of range: ";
+            throw std::out_of_range(to_str(msg, index));
+        }
+        return node_handler[index];
+    }
+    friend inline std::ostream& operator<< (std::ostream& os, const AST& ast) {
+        os << "AST {\n";
+        using NodeKind = AST::Node::Kind;
+        for (int i = 0; i < ast.size(); ++i) {
+            const AST::Node& node = ast[i];
+            if        (node.kind == NodeKind::VecStatement) {
+                os << ast.statements[node.index] << '\n';
+            } else if (node.kind == NodeKind::VecIfCondition) {
+                os << ast.if_conditions[node.index] << '\n';
+            } else if (node.kind == NodeKind::VecGateDeclaration) {
+                os << ast.gate_declarations[node.index] << '\n';
+            } else throw std::invalid_argument("Unknown AST::Node::Kind");
+        }
+        return (os << '}');
+    }
 };
 
 class Parser {
 public:
     // ----- member -----
-    Tokenizer tokenizer;
-    std::vector<ClassAST> AST = {};
-    std::vector<Token>& tokens = tokenizer.tokens;
-    std::vector<Error>& errors = tokenizer.errors;
-    std::deque<std::string>& fixed_str = tokenizer.fixed_str;
+    AST ast;
+    std::vector<Token> tokens;
+    std::vector<Error> errors;
+    std::deque<std::string> fixed_str;
+    
     // ----- constructor -----
-    inline Parser(const Tokenizer& tokenizer_) noexcept : tokenizer(tokenizer_) {}
+    inline Parser(Tokenizer& tk) 
+      : tokens(std::move(tk.tokens)), 
+        errors(std::move(tk.errors)),
+        fixed_str(std::move(tk.fixed_str)) {}
 private:
-    // ----- functions -----
-    inline constexpr void _add_error(const Token& token, const std::string& str) {
-        tokenizer.errors.push_back(Error(token, str));
+    // ----- structure -----
+    template<typename T>
+    struct ParsedObject {
+        size_t index = npos;
+        std::optional<T> node_opt = std::nullopt;
+        inline ParsedObject() noexcept = default;
+        inline ParsedObject(size_t i, std::optional<T> ptr) : index(i), node_opt(ptr) {}
+    };
+    
+    // ----- function ----- 
+    template <typename... Args>
+    inline void _add_error(size_t index, const Args&... args) {
+        errors.push_back(Error(tokens[index], to_str(args...)));
     }
-public:
-    // inline constexpr void check_beginning_tokens() noexcept {
-    //     std::string msg = "";
-    //     // the beginning tokenizer must be "OPENQASM 2.0;"
-    //     if (tokenizer[0].type != TokenType::openqasm || tokenizer[0].text != "OPENQASM") {
-    //         msg = "The first token must be 'OPENQASM'";
-    //         this->_add_error(tokenizer[0], msg);
-    //         return;
-    //     }
-    //     if (tokenizer[1].type != TokenType::real_number) {
-    //         msg = "The second token must be version number";
-    //         this->_add_error(tokenizer[1], msg);
-    //         return;
-    //     }
-    //     if (tokenizer[2].type != TokenType::semicolon) {
-    //         msg = to_str("Expected ';' before '", tokenizer[2].text, "' token");
-    //         this->_add_error(tokenizer[2], msg);
-    //         return;
-    //     }
-    //     if (tokenizer[1].text != "2.0") {
-    //         msg = to_str("Unsupported version: ", tokenizer[1].text);
-    //         this->_add_error(tokenizer[1], msg);
-    //         return;
-    //     }
-    // }
-    inline constexpr void parse() noexcept {
+    inline void _add_error(const Token& token, const std::string& str) {
+        errors.push_back(Error(token, str));
+    }
+    inline void _ensure_index(size_t index) const {
+        if (index < tokens.size()) return;
+        throw std::out_of_range("Parser::tokens index out of range");
+    }
+    
+    inline void _attach_token(size_t index, Token::Kind kind, const std::string& str) {
+        if (index >= tokens.size()) return;
+        fixed_str.push_back(str);
+        size_t line = (index == 0 ? 1 : tokens[index-1].line);
+        std::string_view sv = std::string_view(fixed_str.back());
+        tokens.insert(tokens.begin()+index, Token(line, sv, kind));
+    }
+    inline bool _check_token_kind(size_t index, Token::Kind kind) noexcept {
+        return (index < tokens.size() && tokens[index].kind == kind);
+    }
+    inline bool _ensure_token_exist(size_t index, const std::string& expected, Token::Kind kind) {
+        // token: the token before expected
+        // expected: expected token type
+        // next: next_token.text
+        if (!this->_check_token_kind(index, kind)) {
+            this->_add_error(index, "Expected ", expected, " before next token or EOF");
+            return false;
+        }
+        return true;
+    }
+    inline void _ensure_or_attach(size_t& current, const std::string& expected, Token::Kind kind, const std::string& str) {
+        if (current != std::numeric_limits<size_t>::max()) { ++current; }
+        if (this->_ensure_token_exist(current-1, expected, kind)) return; 
+        this->_attach_token(current-1, kind, str);
+    }
+    
+    inline std::optional<Statement>  _parse_qop(size_t& current) {
+        // Update current and parse qop if there is one
+        // else Do not update current, and then return false
+        if (!this->_check_token_kind(current, Token::Kind::Identifier)) return {std::nullopt};
+        // prepare
+        Statement statement;
+        size_t index = current;
+        // gate_name (classical_param) qubit_param;
+        this->_parse_classical_param(current);
+        this->_parse_qubit_param(current);
+        this->_ensure_or_attach(current, "\";\"", Token::Kind::Semicolon, ";");
+        statement.add_tokens(tokens, Range(index, current));
+        return {statement};
+    }
+    inline std::optional<Expression> _parse_expression(size_t& current) {// TODO:
+        // Update current and parse expression if there is one
+        // else Do not update current, and then return false
+    }
+    inline void _parse_qubit_param(size_t& current) {
+        if (current >= tokens.size()) return;
+        // make sure the first qubit exist
+        this->_ensure_or_attach(current, "the name of qreg", Token::Kind::Identifier, "demmy qreg");
+        this->_ensure_or_attach(current, "\"[\"", Token::Kind::LeftBracket, "[");
+        this->_ensure_or_attach(current, "the index of qubit", Token::Kind::nnInteger, "0");
+        this->_ensure_or_attach(current, "\"]\"", Token::Kind::RightBracket, "]");
+        // parse more qubit if there are some
+        size_t last_intact_qubit = current;
+        bool comma_exist, qreg_exist, left_exist, index_exist, right_exist;
+        while (true) {
+            // ..., qreg[index]
+            comma_exist = this->_check_token_kind(current++, Token::Kind::Comma       );
+            qreg_exist  = this->_check_token_kind(current++, Token::Kind::Identifier  );
+            left_exist  = this->_check_token_kind(current++, Token::Kind::LeftBracket );
+            index_exist = this->_check_token_kind(current++, Token::Kind::nnInteger   );
+            right_exist = this->_check_token_kind(current++, Token::Kind::RightBracket);
+            // successfully get an intact qubit, eat it
+            if (comma_exist && qreg_exist && left_exist && index_exist && right_exist) {
+                last_intact_qubit = current;
+                continue;
+            }
+            // something loss, stop parsing and left things behind there
+            current = last_intact_qubit;
+            return;
+        }
+    }
+    inline void _parse_classical_param(size_t& current) {
+        if (current >= tokens.size()) return;
+        // no classical parameter
+        if (!this->_check_token_kind(current, Token::Kind::LeftParen)) return;
+        // make sure the first param exist, otherwise () is redundant
+        if (!this->_parse_expression(++current).has_value()) {
+            // Error: empty parameter list
+            this->_add_error(current, "Empty parameter list is redundant");
+            this->_ensure_or_attach(current, "\")\"", Token::Kind::RightParen, ")");
+            return;
+        }
+        // parameters separated by ','
+        size_t last_intact_param = current;
+        bool has_comma, has_exprs;
+        while (true) {
+            // ..., Identifier
+            has_comma = this->_check_token_kind(current++, Token::Kind::Comma);
+            has_exprs = this->_parse_expression(current).has_value();
+            // successfully parse a param
+            if (has_comma && has_exprs) {
+                last_intact_param = current;
+                continue;
+            }
+            // something wrong, close Paren and break
+            this->_ensure_or_attach(current, "\")\"", Token::Kind::RightParen, ")");
+            current = last_intact_param;
+            return;
+        }
+    }
+    inline void _parse_qubit_param_decl(size_t& current) {
+        if (current >= tokens.size()) return;
+        bool has_camma = false;
+        while (true) {
+            // parse the name of qubit
+            if (!this->_check_token_kind(current, Token::Kind::Identifier)) {
+                // move back to previous qubit
+                if (has_camma) --current;
+                // qubit not found
+                else {
+                    // Error: empty qubit param list
+                    this->_add_error(current, "Expect qubit parameter list");
+                    // Fix: attach a dummy param 
+                    this->_attach_token(current++, Token::Kind::Identifier, "dummy param");
+                    // the space make it impossible for user to use this param name
+                }
+                return;
+            }
+            // return if there's no camma after qubit
+            if (!this->_check_token_kind(current, Token::Kind::Comma)) return;
+            ++current;
+        }
+    }
+    inline void _parse_classical_param_decl(size_t& current) {
+        if (current >= tokens.size()) return;
+        // no classical parameter
+        if (!this->_check_token_kind(current, Token::Kind::LeftParen)) return;
+        if (!this->_check_token_kind(++current, Token::Kind::Identifier)) {
+            // Error: empty parameter list
+            this->_add_error(current, "Empty parameter list is redundant");
+            this->_ensure_or_attach(current, "\")\"", Token::Kind::RightParen, ")");
+            return;
+        }
+        ++current; // Eat Identifier
+        // parameters separated by ','
+        bool has_comma, has_idtfr;
+        while (true) {
+            // ..., Identifier
+            has_comma = this->_check_token_kind(current  , Token::Kind::Comma);
+            has_idtfr = this->_check_token_kind(current+1, Token::Kind::Identifier);
+            // successfully parse a param
+            if (has_comma && has_idtfr) {
+                current += 2;
+                continue;
+            }
+            // something wrong, close Paren and break
+            this->_ensure_or_attach(current, "\")\"", Token::Kind::RightParen, ")");
+            return;
+        }
+    }
 
+    // Fix error automatically and add them to errors
+    // If there isn't any valid RETURN_VAL, return {npos, std::nullopt}
+    // Scan the RETURN_TYPE after index, return {new index, the RETURN_VAL}
+    inline ParsedObject<Statement> _parse_statement(size_t index) {
+        // Include path will be converted into abs path
+        // If there aren't any param parameter list, attach a "dummy ..." after it
+        // If the size of register is not specified or is too large, its size will be set to 0
+        this->_ensure_index(index);
+        Statement statement;
+        size_t current = index+1;
+        switch (tokens[index].kind) {
+            case Token::Kind::Semicolon : {
+                return {current, statement};
+            }
+            case Token::Kind::OpenQASM  : {
+                // ensure version is 2.0
+                if (this->_ensure_token_exist(current, "version number", Token::Kind::RealNumber)) {
+                    if (tokens[current].text != "2.0") {
+                        // Error: Unsupported version
+                        std::string msg = to_str();
+                        this->_attach_token(current, Token::Kind::RealNumber, "2.0");
+                        this->_add_error(current, "Unsupported version of OPENQASM: ");
+                    }
+                } 
+                else this->_attach_token(current++, Token::Kind::RealNumber, "2.0");
+                statement.kind = Statement::Kind::OpenQASM; break;
+            }
+            case Token::Kind::Include   : {
+                // ensure string of header path exist
+                if (!this->_ensure_token_exist(current, "header path", Token::Kind::StringLiteral)) {
+                    // Fix: skip this Include token
+                    return {current, statement};
+                }
+                // include path: current_dir & program_dir
+                std::filesystem::path header_path = "";
+                std::filesystem::path raw_filepath = tokens[current].text;
+                std::filesystem::path try_program_dir = get_program_dir() / raw_filepath;
+                std::filesystem::path try_current_dir = get_current_dir() / raw_filepath;
+                if (std::filesystem::exists(try_program_dir)) { header_path = try_program_dir;}
+                if (std::filesystem::exists(try_current_dir)) { header_path = try_current_dir;}
+                if (std::filesystem::exists(raw_filepath))    { header_path = raw_filepath;   }
+                // this file does not exist
+                if (header_path.empty()) {
+                    // Error: No such file or directory
+                    this->_add_error(current, "No such file or directory");
+                    // Fix: skip this Include token
+                    return {++current, statement};
+                }
+                // cannot read this file
+                if (!std::ifstream(header_path).good()) {
+                    // Error: Permission denied
+                    this->_add_error(current++, "Permission denied");
+                    // Fix: skip this Include token
+                    return {current, statement};
+                }
+                // rewrite the path into abs path
+                fixed_str.push_back(header_path.string());
+                tokens[current].text = std::string_view(fixed_str.back());
+                statement.kind = Statement::Kind::Include; 
+                ++current; break;
+            }
+            case Token::Kind::QReg      : {
+                // parse the name of register
+                this->_ensure_or_attach(current, "the name of qreg", Token::Kind::Identifier, "dummy qreg decl");
+                // the '[' before size of qreg
+                this->_ensure_or_attach(current, "\"[\"", Token::Kind::LeftBracket, "[");
+                // the size of qreg
+                this->_ensure_or_attach(current, "the size of qreg", Token::Kind::nnInteger, "0");
+                // go back to checkout the size of register
+                --current; std::int64_t register_size;
+                bool is_overflow = convert_sv_to_int64(tokens[current].text, register_size);
+                if (is_overflow) {
+                    // Error: qreg is too big
+                    this->_add_error(current, "The size of qreg is too large: ", tokens[current].text);
+                    // Fix: let the size zero
+                    fixed_str.push_back("0");
+                    tokens[current].text = std::string_view(fixed_str.back());
+                }
+                ++current;
+                // the ']' before size of qreg
+                this->_ensure_or_attach(current, "\"]\"", Token::Kind::RightBracket, "]");
+                statement.kind = Statement::Kind::QRegDecl; break;
+            }
+            case Token::Kind::CReg      : {
+                // parse the name of register
+                this->_ensure_or_attach(current, "the name of qreg", Token::Kind::Identifier, "dummy creg decl");
+                // the '[' before size of qreg
+                this->_ensure_or_attach(current, "\"[\"", Token::Kind::LeftBracket, "[");
+                // the size of qreg
+                this->_ensure_or_attach(current, "the size of creg", Token::Kind::nnInteger, "0");
+                // go back to checkout the size of register
+                --current; std::int64_t register_size;
+                bool is_overflow = convert_sv_to_int64(tokens[current].text, register_size);
+                if (is_overflow) {
+                    // Error: qreg is too big
+                    this->_add_error(current, "The size of creg is too large: ", tokens[current].text);
+                    // Fix: let the size zero
+                    fixed_str.push_back("0");
+                    tokens[current].text = std::string_view(fixed_str.back());
+                }
+                ++current;
+                // the ']' before size of qreg
+                this->_ensure_or_attach(current, "\"]\"", Token::Kind::RightBracket, "]");
+                statement.kind = Statement::Kind::CRegDecl; break;
+            }
+            case Token::Kind::Opaque    : {
+                // parse the name of opaque
+                this->_ensure_or_attach(current, "the name of opaque", Token::Kind::Identifier, "dummy opaque");
+                // parameter declarations
+                this->_parse_classical_param_decl(current);
+                this->_parse_qubit_param_decl    (current);
+                statement.kind = Statement::Kind::Opaque; break;
+            }
+            case Token::Kind::Reset     : {
+                // the Qreg to reset
+                this->_ensure_or_attach(current, "a qreg name", Token::Kind::Identifier, "dummy qreg");
+                // reset the whole qreg
+                if (!this->_check_token_kind(current, Token::Kind::LeftBracket)) {
+                    statement.kind = Statement::Kind::Reset; break;
+                } 
+                // reset single qubit
+                else { ++current; }
+                // the index of qubit
+                this->_ensure_or_attach(current, "the index of qubit", Token::Kind::nnInteger, "0");
+                // the "]" after qreg index
+                this->_ensure_or_attach(current, "\"]\"", Token::Kind::RightBracket, "]");
+                statement.kind = Statement::Kind::Reset; break;
+            }
+            case Token::Kind::Barrier   : {
+                // ``barrier qreg_name`` 
+                this->_ensure_or_attach(current, "a qreg name", Token::Kind::Identifier, "dummy qreg");
+                // param are qubits, not the whole qreg
+                if (this->_check_token_kind(current, Token::Kind::LeftBracket)) {
+                    // barrier ``qreg_name[index], ...``
+                    this->_parse_qubit_param(--current);
+                }
+                statement.kind = Statement::Kind::Barrier; break;
+            }
+            case Token::Kind::Measure   : {
+                // ``measure qreg_name`` ...
+                this->_ensure_or_attach(current, "a qreg name", Token::Kind::Identifier, "dummy qreg");
+                // measure the whole qreg
+                if (!this->_check_token_kind(current, Token::Kind::LeftBracket)) {
+                    // measure qreg_name ``-> creg_name``
+                    this->_ensure_or_attach(current, "\"->\"", Token::Kind::Arrow, "->");
+                    this->_ensure_or_attach(current, "a creg name", Token::Kind::Identifier, "dummy creg");
+                    statement.kind = Statement::Kind::Measure; break;
+                }
+                // measure single qubit
+                else { ++current; }
+                // measure qreg_name ``[index] -> creg_name[index]``
+                this->_ensure_or_attach(current, "\"[\"", Token::Kind::LeftBracket, "[");
+                this->_ensure_or_attach(current, "the index of qubit", Token::Kind::nnInteger, "0");
+                this->_ensure_or_attach(current, "\"]\"", Token::Kind::RightBracket, "]");
+                // the arrow "->" between qubit and classical bit 
+                this->_ensure_or_attach(current, "\"->\"", Token::Kind::Arrow, "->");
+                // the creg to store the result
+                this->_ensure_or_attach(current, "a creg name", Token::Kind::Identifier, "dummy creg");
+                this->_ensure_or_attach(current, "\"[\"", Token::Kind::LeftBracket, "[");
+                this->_ensure_or_attach(current, "the index of classical bit", Token::Kind::nnInteger, "0");
+                this->_ensure_or_attach(current, "\"]\"", Token::Kind::RightBracket, "]");
+                statement.kind = Statement::Kind::Measure; break;
+            }
+            case Token::Kind::Identifier: {
+                // gate_name (classical_param) qubit_param
+                this->_parse_classical_param(current);
+                this->_parse_qubit_param(current);
+            }
+            default:                      {
+                std::string msg = "Unknown Token::Kind";
+                throw std::invalid_argument(msg);
+            }
+        }
+        // current == index+1 means statement is invalid
+        if (current == index+1) return {npos, std::nullopt};
+        // assign kind & leafs for statement
+        this->_ensure_or_attach(current, "\";\"", Token::Kind::Semicolon, ";");
+        statement.add_tokens(tokens, Range(index, current));
+        return {current, statement};
+    }
+    inline ParsedObject<IfCondition> _parse_if_condition(size_t index) {
+        this->_ensure_index(index);
+        // skip if token is not "if"
+        if (tokens[index].kind != Token::Kind::If) return {npos, std::nullopt}; 
+        IfCondition if_cond;
+        size_t current = index + 1;
+        // `if (creg == int)` qop;
+        this->_ensure_or_attach(current, "\"(\"", Token::Kind::LeftParen, "(");
+        this->_ensure_or_attach(current, "a creg name", Token::Kind::Identifier, "dummy_creg");
+        if_cond.creg = tokens[current-1];
+        this->_ensure_or_attach(current, "\"==\"", Token::Kind::Equal, "==");
+        this->_ensure_or_attach(current, "an integer value", Token::Kind::nnInteger, "0");
+        // limit the val to compare 
+        std::int64_t raw_val = 0;
+        bool is_overflow = convert_sv_to_int64(tokens[current-1].text, raw_val);
+        if (is_overflow) {
+            if_cond.val = 0;
+            std::string msg = "The condition value is too large: ";
+            this->_add_error(current-1, msg, tokens[current-1].text);
+        } else { if_cond.val = static_cast<size_t>(raw_val); }
+        this->_ensure_or_attach(current, "\")\"", Token::Kind::RightParen, ")");
+        // if (creg == int) `qop`;
+        std::optional<Statement> parsed_qop = this->_parse_qop(current);
+        if (parsed_qop.has_value()) {
+            if_cond.statemant = parsed_qop.value();
+            return {current, if_cond};
+        }
+        // Error: qop not found
+        this->_ensure_or_attach(current, "\";\"", Token::Kind::Semicolon, ";");
+        this->_add_error(current, "Expected a valid qop after if condition");
+        if_cond.statemant = Statement();
+        return {current, if_cond};
+    }
+    inline ParsedObject<GateDeclaration> _parse_gate_declaration(size_t index) {// TODO:
+        this->_ensure_index(index);
+        // skip if token is not "gate"
+        if (tokens[index].kind != Token::Kind::Gate) return {index+1, std::nullopt}; 
+    }
+
+public:
+    inline void parse() {
+        std::string msg;
+        size_t index = 0;
+        // index may increase more than 1 here
+        while (index < tokens.size()) {
+            // case 1: gate declaration
+            ParsedObject<GateDeclaration> parsed_gate_decl = this->_parse_gate_declaration(index);
+            if (parsed_gate_decl.node_opt.has_value()) {
+                ast.push_back(std::move(*parsed_gate_decl.node_opt));
+                index = parsed_gate_decl.index;
+                continue;
+            }
+            // case 2: if condition
+            ParsedObject<IfCondition> parsed_if_cond = this->_parse_if_condition(index);
+            if (parsed_if_cond.node_opt.has_value()) {
+                ast.push_back(std::move(*parsed_if_cond.node_opt));
+                index = parsed_if_cond.index;
+                continue;
+            }
+            // case 3: statement
+            ParsedObject<Statement> parsed_statement = this->_parse_statement(index);
+            if (parsed_statement.node_opt.has_value()) {
+                ast.push_back(std::move(*parsed_statement.node_opt));
+                index = parsed_statement.index;
+                continue;
+            }
+            // case 4: invalid
+            this->_add_error(index, "Invalid token: ", tokens[index].text);
+            index += 1;
+        }
     }
 };
 
@@ -764,19 +1422,15 @@ int main(int argc, char* argv[]) {
     // ----- preprocess -----
     std::cout << "preprocessing\n";
     Preprocessor preprocessor(raw_asm_str);
-    std::cout << "erase_comments\n";
     preprocessor.erase_comments();
-    std::cout << "standardize_EOL\n";
     preprocessor.standardize_EOL();
-    std::cout << "standardize_space\n";
     preprocessor.standardize_space();
-    std::cout << "split_by\n";
-    context_type context = preprocessor.split_by("\n");
-    Error::context_ptr = std::make_shared<context_type>(context);
 
     // ----- tokenize -----
     std::cout << "tokenizing\n";
     Tokenizer tokenizer(preprocessor.text);
+    context_type context = preprocessor.split_by("\n");
+    Error::context_ptr = std::make_shared<context_type>(context);
     tokenizer.tokenize();
 
     // ----- parser -----
@@ -784,12 +1438,16 @@ int main(int argc, char* argv[]) {
     Parser parser(tokenizer);
     
     // DEBUG
+    std::cout << "----- context -----\n";
+    print_vector(context);
     std::cout << "----- tokens -----\n";
     print_vector(tokenizer.tokens);
     std::cout << "----- errors -----\n";
     print_vector(tokenizer.errors);
-    std::cout << "----- context -----\n";
-    print_vector(context);
+    std::cout << "----- AST -----\n";
+    std::cout << parser.ast << '\n';
+    std::cout << "----- errors -----\n";
+    print_vector(parser.errors);
 
     // 語意分析(Gate展開, 常數計算, 檢查語意是否合理)
     // 基本區塊劃分與控制流圖建立(分成 Basic Block)
@@ -799,16 +1457,15 @@ int main(int argc, char* argv[]) {
     // ----- grammer -----
     // OPENQASM 2.0;
     // include "qelib1.inc";
-    // qreg[n]
-    // creg[n]
-    // gate ...parameters
-    // measure q[n] -> c[n]
-    // if (expression) statement
+    // qreg q[n];
+    // creg c[n];
+    // measure q[n] -> c[n];
+    // if (expression) statement;
     // expression: only c==<const>
     // opaque
     // reset
-    // barrier
-    // gate_name params
+    // barrier q[n];
+    // gate_name params;
     // gate HGate param { 
     //     u2(0, pi) param; 
     // }
@@ -819,6 +1476,14 @@ int main(int argc, char* argv[]) {
 }
 
 // g++ QAssembler.cpp -o QAssembler.exe -O3 -Wall -Wextra -g3 -std=c++20 -static -static-libgcc -static-libstdc++
-// QAssembler.exe Example.qasm
-// QAssembler.exe qelib1.inc
-// Parse tokens into an AST
+// QAssembler.exe Example.qasm || QAssembler.exe qelib1.inc
+
+// TODO : more friendly error message
+// FIXME: error should also record witch file it is in (test.cpp:1:8)
+// FIXME: it might be confusing if error occurs on fixed token
+// FIXME: using same template of error message for all kinds of error
+// SOLUTION: store all the raw token, and then every token point to a raw token
+// FIXME: there might be some expression in Expression, IfCondition, and GateDeclaration
+// SOLUTION: use std::byte* and index table to store data in AST and so on
+// SOLUTION: and then we dont need Statement::Kind and Expression::Kind
+// SOLUTION: inherit instead, parse it and return {std::byte*, size}
