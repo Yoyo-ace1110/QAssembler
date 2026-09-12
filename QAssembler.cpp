@@ -25,7 +25,7 @@ namespace {
     using context_type = std::vector<std::string>;
 
     template <typename... Args>
-    inline std::string to_str(const Args&... args) {
+    inline std::string str(const Args&... args) {
         static_assert(
             (std::is_convertible<Args, std::string_view>::value && ...), 
             "All arguments must be convertible to std::string_view"
@@ -246,7 +246,6 @@ public:
         lines.end   = token.line + lines_count;
     }
     // ostream support
-    inline void print() const { std::cout << (*this) << '\n'; }
     friend inline std::ostream& operator<< (std::ostream& os, const Error& error) {
         if (!context_ptr) throw std::invalid_argument("invalid context");
         std::ios_base::fmtflags f(os.flags());
@@ -326,7 +325,7 @@ public:
     inline size_t find(const std::string& str) const {
         return this->find(str, this->_default_range());
     }
-    inline size_t find(const std::string str, size_t pos) const {
+    inline size_t find(const std::string& str, size_t pos) const {
         if (str.empty() || pos >= text.size()) return npos;
         return text.find(str, pos);
     }
@@ -536,7 +535,7 @@ private:
                 // Error: Unclosed quote
                 this->_add_error(token, "Unclosed quote");
                 // Fix: close quote
-                fixed_str.push_back(to_str(token.text, "\""));
+                fixed_str.push_back(str(token.text, "\""));
                 token.text = std::string_view(fixed_str.back());
                 // strip the quotes
                 token.text.remove_prefix(1);
@@ -919,14 +918,14 @@ public:
     inline Node& operator[](size_t index) {
         if (index >= node_handler.size()) {
             std::string msg = "AST::operator[] index out of range: ";
-            throw std::out_of_range(to_str(msg, index));
+            throw std::out_of_range(str(msg, index));
         }
         return node_handler[index];
     }
     inline const Node& operator[](size_t index) const {
         if (index >= node_handler.size()) {
             std::string msg = "AST::operator[] index out of range: ";
-            throw std::out_of_range(to_str(msg, index));
+            throw std::out_of_range(str(msg, index));
         }
         return node_handler[index];
     }
@@ -973,7 +972,7 @@ private:
     // ----- function ----- 
     template <typename... Args>
     inline void _add_error(size_t index, const Args&... args) {
-        errors.push_back(Error(tokens[index], to_str(args...)));
+        errors.push_back(Error(tokens[index], str(args...)));
     }
     inline void _add_error(const Token& token, const std::string& str) {
         errors.push_back(Error(token, str));
@@ -1153,7 +1152,7 @@ private:
                 if (this->_ensure_token_exist(current, "version number", Token::Kind::RealNumber)) {
                     if (tokens[current].text != "2.0") {
                         // Error: Unsupported version
-                        std::string msg = to_str();
+                        std::string msg = str();
                         this->_attach_token(current, Token::Kind::RealNumber, "2.0");
                         this->_add_error(current, "Unsupported version of OPENQASM: ");
                     }
@@ -1417,7 +1416,6 @@ int main(int argc, char* argv[]) {
     }
     // convert ifs to TextProcessor
     std::string raw_asm_str((std::istreambuf_iterator<char>(asm_file)), std::istreambuf_iterator<char>());
-    TextProcessor processer(raw_asm_str);
 
     // ----- preprocess -----
     std::cout << "preprocessing\n";
