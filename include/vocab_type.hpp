@@ -52,15 +52,8 @@ struct Token {
     
     // member
     SrcLoc location;
-    TokenManager* tokman;
     std::string_view text;
     Kind kind = Kind::Invalid;
-
-    // constructor
-    inline constexpr Token(TokenManager* tokman_, SrcManager* srcman) noexcept 
-    : location(srcman), tokman(tokman_), kind(Kind::Invalid) {}
-    inline constexpr Token(TokenManager* tokman_, const SrcLoc& srcloc, std::string_view str, Kind kind_) noexcept
-    : location(srcloc), tokman(tokman_), text(str), kind(kind_) {}
 
     // function
     [[nodiscard]] inline constexpr size_t length() const noexcept {
@@ -97,17 +90,15 @@ struct Error {
     size_t length;
     SrcLoc location;
     std::string message;
-    ErrorManager* errman;
 
     // constructor
-    inline Error(ErrorManager* errman_, const Token& token, const std::string& msg) noexcept
-    : length(token.length()), location(token.location), message(msg), errman(errman_) {}
-    inline Error(ErrorManager* errman_, const SrcLoc& srcloc, size_t len, const std::string& msg) noexcept
-    : length(len), location(srcloc), message(msg), errman(errman_) {}
+    inline Error(const Token& token, const std::string& msg) noexcept
+    : length(token.length()), location(token.location), message(msg) {}
+    inline Error(const SrcLoc& srcloc, size_t len, const std::string& msg) noexcept
+    : length(len), location(srcloc), message(msg) {}
     
     // operator
     friend inline std::ostream& operator << (std::ostream& os, const Error& error) {
-        if (!error.errman) [[unlikely]] throw std::runtime_error("ErrorManager* is nullptr");
         // store the flags before output anything to os
         std::ios_base::fmtflags os_flag(os.flags());
         // calculate the line ranges of error
@@ -148,19 +139,19 @@ struct Error {
 
 struct ErrorManager {
     std::vector<Error> errors;
-    
-    // constructor
-    inline constexpr ErrorManager() noexcept = default;
 
     // function
+    [[nodiscard]] inline constexpr size_t size() const noexcept {
+        return errors.size();
+    }
     inline constexpr void push_back(const Error& error) {
         errors.push_back(error);
     }
     inline constexpr void emplace_back(const Token& token, const std::string& msg) {
-        errors.emplace_back(this, token, msg);
+        errors.emplace_back(token, msg);
     }
     inline constexpr void emplace_back(const SrcLoc& srcloc, size_t len, const std::string& msg) {
-        errors.emplace_back(this, srcloc, len, msg);
+        errors.emplace_back(srcloc, len, msg);
     }
 };
 
@@ -172,11 +163,14 @@ struct TokenManager {
     inline TokenManager() noexcept = default;
 
     // function
+    [[nodiscard]] inline constexpr size_t size() const noexcept {
+        return tokens.size();
+    }
     inline void push_back(const Token& token) {
         tokens.push_back(token);
     }
     inline void emplace_back(const SrcLoc& srcloc, std::string_view str, Token::Kind kind_) {
-        tokens.emplace_back(this, srcloc, str, kind_);
+        tokens.emplace_back(srcloc, str, kind_);
     }
     inline void add_fixed_token(const SrcLoc& srcloc, const std::string& str, Token::Kind kind_) {
         fixed_str.push_back(str);

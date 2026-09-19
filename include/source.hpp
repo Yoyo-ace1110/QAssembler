@@ -4,15 +4,8 @@
 #include"forward.hpp"
 
 struct SrcLoc {
-    size_t offset;
-    size_t file_id;
-    SrcManager* srcman;
-
-    // constructor
-    inline constexpr explicit SrcLoc(SrcManager* srcman_) noexcept
-    : offset(npos), file_id(npos), srcman(srcman_) {}
-    inline constexpr explicit SrcLoc(SrcManager* srcman_, size_t offset_, size_t file_id) noexcept
-    : offset(offset_), file_id(file_id), srcman(srcman_) {}
+    size_t offset = npos;
+    size_t file_id = npos;
 
     // function 
     [[nodiscard]] SrcFile* file_ptr();
@@ -22,15 +15,13 @@ struct SrcLoc {
 
 struct SrcFile {
     size_t id = npos;
-    SrcManager* srcman;
     std::string content;
     std::string modified;
     std::vector<size_t> line_offsets;
 
-    // constructor
-    inline explicit SrcFile(SrcManager* srcman_, size_t id_, const std::string& content_)
-    : id(id_), srcman(srcman_), content(content_), modified(content_) { this->compute_line_offsets(); }
-    
+    inline constexpr SrcFile(size_t id_, const std::string& content_) noexcept
+    : id(id_), content(content_), modified(content_) {}
+
     // content-based function
     inline constexpr void compute_line_offsets() {
         // offset start with 0
@@ -76,11 +67,10 @@ struct SrcFile {
 struct SrcCoord {
     size_t file_id;
     size_t row, col;
-    SrcManager* srcman;
 
     // constructor
     inline explicit SrcCoord(const SrcLoc& srcloc) noexcept
-    : file_id(srcloc.file_id), srcman(srcloc.srcman) {
+    : file_id(srcloc.file_id) {
         Coordinate coord = this->file_ptr()->get_coord(srcloc.offset);
         row = coord.row; 
         col = coord.col;
@@ -127,7 +117,7 @@ public:
     }
     [[nodiscard]] inline size_t add_file(const std::string& path, const std::string& content) {
         size_t id = this->size();
-        files.emplace_back(this, id, content);
+        files.emplace_back(id, content);
         paths.push_back(path);
         return id;
     }
@@ -140,7 +130,7 @@ public:
         // add it to file & path list
         size_t id = this->size();
         paths.push_back(filepath);
-        files.emplace_back(this, id, ss.str());
+        files.emplace_back(id, ss.str());
         return true;
     }
 };

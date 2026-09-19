@@ -8,7 +8,9 @@
 #include<memory>
 #include<limits>
 #include<fstream>
+#include<cstring>
 #include<cstdint>
+#include<cstddef>
 #include<iomanip>
 #include<utility>
 #include<charconv>
@@ -21,7 +23,9 @@
 
 using size_t = std::size_t;
 static const size_t npos = std::string::npos;
+// static const size_t ptr_size = sizeof(void*);
 
+// declare forwarding
 struct [[nodiscard]] SrcLoc;
 struct [[nodiscard]] SrcFile;
 struct [[nodiscard]] SrcCoord;
@@ -33,6 +37,12 @@ struct [[nodiscard]] TokenManager;
 class  [[nodiscard]] Preprocessor;
 class  [[nodiscard]] Lexer;
 
+// declare pointers and assign as nullptr
+SrcManager*   srcman = nullptr; 
+ErrorManager* errman = nullptr;
+TokenManager* tokman = nullptr;
+
+// utilitys
 struct [[nodiscard]] Coordinate {
     // starts with 1
     size_t row = npos;

@@ -7,19 +7,17 @@
 
 class Lexer {
 private:
-    const SrcFile* file;
-    ErrorManager* errman;
-    TokenManager* tokman;
+    SrcFile* file = nullptr;
 
     // function
-    inline constexpr bool _is_number(char c) const noexcept {
+    [[nodiscard]] inline constexpr bool _is_number(char c) const noexcept {
         return (c >= '0' && c <= '9');
     }
     inline constexpr void _ensure_index(size_t index) const {
         if (index < file->modified.size()) return;
         throw std::out_of_range("file->modified index out of range");
     }
-    inline constexpr bool _has_close_quote(size_t index) const {
+    [[nodiscard]] inline constexpr bool _has_close_quote(size_t index) const {
         size_t count = 0;
         this->_ensure_index(index);
         if (index == 0) return false;
@@ -35,21 +33,18 @@ private:
         // (count % 2 == 0);
         return !(count & 1);
     }
-    inline constexpr void set_file(const SrcFile* srcfile) noexcept {
-        file = srcfile;
+    inline void _add_error(const Token& token, const std::string& msg) const {
+        errman->emplace_back(token, msg);
     }
-    inline constexpr void _add_error(const Token& token, const std::string& msg) const {
-        this->errman->emplace_back(token, msg);
+    inline void _add_error(const SrcLoc& srcloc, size_t len, const std::string& msg) const {
+        errman->emplace_back(srcloc, len, msg);
     }
-    inline constexpr void _add_error(const SrcLoc& srcloc, size_t len, const std::string& msg) const {
-        this->errman->emplace_back(srcloc, len, msg);
-    }
-    inline constexpr bool _can_be_identifier(char c) const noexcept {
+    [[nodiscard]] inline constexpr bool _can_be_identifier(char c) const noexcept {
         bool is_uppercase = (c >= 'A' && c <= 'Z');
         bool is_lowercase = (c >= 'a' && c <= 'z');
         return (is_uppercase || is_lowercase || this->_is_number(c) || c == '_');
     }
-    inline constexpr bool _is_end_of_keyword(size_t next_index) const noexcept {
+    [[nodiscard]] inline constexpr bool _is_end_of_keyword(size_t next_index) const noexcept {
         if (next_index >= file->modified.size()) return true;
         return !this->_can_be_identifier(file->modified[next_index]);
     }
@@ -65,41 +60,41 @@ private:
         // 2-char symbols
         if (index+1 < file->modified.size()) {
             subview = this->_get_subview(index, 2);
-            if (subview == "->") return Token(tokman, srcloc, subview, Token::Kind::Arrow);
-            if (subview == "==") return Token(tokman, srcloc, subview, Token::Kind::Equal);
+            if (subview == "->") return Token(srcloc, subview, Token::Kind::Arrow);
+            if (subview == "==") return Token(srcloc, subview, Token::Kind::Equal);
         }
         // 1-char symbols
         switch (file->modified[index]) {
-            case ',': {return Token(tokman, srcloc, this->_get_subview(index, 1), Token::Kind::Comma);}
-            case ';': {return Token(tokman, srcloc, this->_get_subview(index, 1), Token::Kind::Semicolon);}
-            case '[': {return Token(tokman, srcloc, this->_get_subview(index, 1), Token::Kind::LeftBracket);}
-            case ']': {return Token(tokman, srcloc, this->_get_subview(index, 1), Token::Kind::RightBracket);}
-            case '{': {return Token(tokman, srcloc, this->_get_subview(index, 1), Token::Kind::LeftBrace);}
-            case '}': {return Token(tokman, srcloc, this->_get_subview(index, 1), Token::Kind::RightBrace);}
-            case '(': {return Token(tokman, srcloc, this->_get_subview(index, 1), Token::Kind::LeftParen);}
-            case ')': {return Token(tokman, srcloc, this->_get_subview(index, 1), Token::Kind::RightParen);}
-            case '+': {return Token(tokman, srcloc, this->_get_subview(index, 1), Token::Kind::Plus);}
-            case '-': {return Token(tokman, srcloc, this->_get_subview(index, 1), Token::Kind::Minus);}
-            case '*': {return Token(tokman, srcloc, this->_get_subview(index, 1), Token::Kind::Times);}
-            case '/': {return Token(tokman, srcloc, this->_get_subview(index, 1), Token::Kind::Devide);}
-            case '^': {return Token(tokman, srcloc, this->_get_subview(index, 1), Token::Kind::Power);}
+            case ',': {return Token(srcloc, this->_get_subview(index, 1), Token::Kind::Comma);}
+            case ';': {return Token(srcloc, this->_get_subview(index, 1), Token::Kind::Semicolon);}
+            case '[': {return Token(srcloc, this->_get_subview(index, 1), Token::Kind::LeftBracket);}
+            case ']': {return Token(srcloc, this->_get_subview(index, 1), Token::Kind::RightBracket);}
+            case '{': {return Token(srcloc, this->_get_subview(index, 1), Token::Kind::LeftBrace);}
+            case '}': {return Token(srcloc, this->_get_subview(index, 1), Token::Kind::RightBrace);}
+            case '(': {return Token(srcloc, this->_get_subview(index, 1), Token::Kind::LeftParen);}
+            case ')': {return Token(srcloc, this->_get_subview(index, 1), Token::Kind::RightParen);}
+            case '+': {return Token(srcloc, this->_get_subview(index, 1), Token::Kind::Plus);}
+            case '-': {return Token(srcloc, this->_get_subview(index, 1), Token::Kind::Minus);}
+            case '*': {return Token(srcloc, this->_get_subview(index, 1), Token::Kind::Times);}
+            case '/': {return Token(srcloc, this->_get_subview(index, 1), Token::Kind::Devide);}
+            case '^': {return Token(srcloc, this->_get_subview(index, 1), Token::Kind::Power);}
             default : break;
         }
         // default
-        return Token(tokman, srcloc, subview, Token::Kind::Invalid);
+        return Token(srcloc, subview, Token::Kind::Invalid);
     }
     [[nodiscard]] inline Token _match_keyword(const SrcLoc& srcloc) const {
         const size_t index = srcloc.offset;
         this->_ensure_index(index);
         std::string_view subview;
-        Token token(tokman, srcloc, subview, Token::Kind::Invalid);
+        Token token(srcloc, subview, Token::Kind::Invalid);
         const size_t remaining_length = file->modified.size()-index;
         // lambda
         auto match = [&] (std::string_view keyword, Token::Kind kind) -> bool {
             size_t length = keyword.size();
             subview = this->_get_subview(index, length);
             if (subview == keyword && this->_is_end_of_keyword(index+length)) {
-                token = Token(tokman, srcloc, subview, kind);
+                token = Token(srcloc, subview, kind);
                 return true;
             }
             return false;
@@ -146,6 +141,7 @@ private:
                 tokman->add_fixed_token(srcloc, std::string(subview), Token::Kind::StringLiteral);
                 // Error: Unclosed quote
                 this->_add_error(tokman->tokens.back(), "Unclosed quote");
+                return;
             }
             // strip the quotes
             subview.remove_prefix(1);
@@ -250,22 +246,18 @@ private:
     }
 
 public:
-    // constructor
-    inline constexpr Lexer(ErrorManager* errman_, TokenManager* tokman_) noexcept 
-    : file(nullptr), errman(errman_), tokman(tokman_) {}
-
-    inline void tokenize(const SrcFile* srcfile) {
-        this->set_file(srcfile);
+    inline void tokenize(SrcFile* srcfile) {
+        file = srcfile;
+        file->compute_line_offsets();
         const std::string& text = file->modified;
         if (text.empty()) return;
         // initialize
         size_t length;
         bool is_in_quote = false;
-        Token token  (tokman, file->srcman);
-        Token dynamic(tokman, file->srcman);
-        SrcLoc start  (file->srcman, 0, file->id);
-        SrcLoc current(file->srcman, 0, file->id);
-        tokman->tokens.reserve(tokman->tokens.size()+text.size()/4);
+        Token token, dynamic;
+        SrcLoc start  (0, file->id);
+        SrcLoc current(0, file->id);
+        tokman->tokens.reserve(tokman->size()+text.size()/4);
         // tokenize loop
         while (current.offset < text.size()) {
             length = current.offset-start.offset+1;
@@ -273,7 +265,7 @@ public:
             if (is_in_quote) {
                 // quote closed
                 if (this->_has_close_quote(current.offset)) {
-                    this->_add_dynamic_token_or_fix_error(current, length);
+                    this->_add_dynamic_token_or_fix_error(start, length);
                     start.offset = (++current.offset);
                     is_in_quote = false;
                     continue;
