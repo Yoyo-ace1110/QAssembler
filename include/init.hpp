@@ -6,5 +6,6 @@
 #include"vocab_type.hpp"
 #include"preprocessor.hpp"
 #include"lexer.hpp"
+#include"ast.hpp"
 
 #endif

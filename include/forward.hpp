@@ -1,6 +1,7 @@
 #ifndef YOYO_ACE1110_QASSEMBLER_FORWARD_HPP
 #define YOYO_ACE1110_QASSEMBLER_FORWARD_HPP
 
+#include<span>
 #include<array>
 #include<deque>
 #include<string>
@@ -13,6 +14,7 @@
 #include<cstddef>
 #include<iomanip>
 #include<utility>
+#include<concepts>
 #include<charconv>
 #include<iostream>
 #include<optional>
@@ -22,25 +24,47 @@
 #include<string_view>
 
 using size_t = std::size_t;
-static const size_t npos = std::string::npos;
-// static const size_t ptr_size = sizeof(void*);
+inline static constexpr size_t npos = std::numeric_limits<size_t>::max();
 
 // declare forwarding
 struct [[nodiscard]] SrcLoc;
 struct [[nodiscard]] SrcFile;
 struct [[nodiscard]] SrcCoord;
 class  [[nodiscard]] SrcManager;
+
 struct [[nodiscard]] Token;
 struct [[nodiscard]] Error;
 struct [[nodiscard]] ErrorManager;
 struct [[nodiscard]] TokenManager;
+
 class  [[nodiscard]] Preprocessor;
+
 class  [[nodiscard]] Lexer;
+
+template<typename Derived>
+struct [[nodiscard]] Statement;
+struct [[nodiscard]] astOPENQASM;
+struct [[nodiscard]] astInclude ;
+struct [[nodiscard]] astQRegDecl;
+struct [[nodiscard]] astCRegDecl;
+struct [[nodiscard]] astMeasure ;
+struct [[nodiscard]] astReset   ;
+struct [[nodiscard]] astBarrier ;
+struct [[nodiscard]] astGateCall;
+struct [[nodiscard]] astOpaque  ;
+
+struct [[nodiscard]] ASTNode;
+class  [[nodiscard]] AST;
 
 // declare pointers and assign as nullptr
 SrcManager*   srcman = nullptr; 
 ErrorManager* errman = nullptr;
 TokenManager* tokman = nullptr;
+AST*          ASTptr = nullptr;
+
+// concepts
+template<typename T>
+concept is_Statement_c = std::derived_from<T, Statement<T>>;
 
 // utilitys
 struct [[nodiscard]] Coordinate {

@@ -156,7 +156,7 @@ struct ErrorManager {
 };
 
 struct TokenManager {
-    std::vector<Token> tokens;
+    std::deque<Token> tokens;
     std::deque<std::string> fixed_str;
     
     // constructor

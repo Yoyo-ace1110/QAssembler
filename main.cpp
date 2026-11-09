@@ -29,10 +29,13 @@ int main(int argc, char* argv[]) {
     SrcManager   source_manager;
     ErrorManager error_manager;
     TokenManager token_manager;
+    AST          ast;
+    // always use ptr->...
     srcman = &source_manager;
     errman = &error_manager;
     tokman = &token_manager;
-    
+    ASTptr = &ast;
+    // processors
     Lexer lexer;
     Preprocessor preprocessor;
 
@@ -52,7 +55,7 @@ int main(int argc, char* argv[]) {
     // output
     std::cout << "----- SourceManager -----\n";
     for (size_t i = 0; i < srcman->size(); i++) {
-        std::cout << "File " << srcman->get_path(i) << ": " << srcman->get_file(i).length() << "characters\n";
+        std::cout << "File " << srcman->get_path(i) << ": " << srcman->get_file(i).length() << " characters\n";
     }
     std::cout << "----- ErrorManager -----\n";
     for (size_t i = 0; i < errman->size(); i++) {
